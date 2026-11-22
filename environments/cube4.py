@@ -24,6 +24,26 @@ FACE_FRAMES: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[i
 }
 
 
+def sticker_coords(cube_len: int) -> Tuple[np.ndarray, np.ndarray]:
+    """ 3-D coordinates of every sticker, in doubled integer units (see compute_rotation_idxs).
+
+    @return: points (6 * cube_len**2, 3) and the outward normal of each sticker's face (6 * cube_len**2, 3)
+    """
+    num_face: int = cube_len ** 2
+    points: np.ndarray = np.zeros((6 * num_face, 3), dtype=int)
+    sticker_normals: np.ndarray = np.zeros((6 * num_face, 3), dtype=int)
+    for face_idx, face in enumerate(FACE_ORDER):
+        normal, row_axis, col_axis = (np.array(v) for v in FACE_FRAMES[face])
+        for row in range(cube_len):
+            for col in range(cube_len):
+                idx: int = face_idx * num_face + row * cube_len + col
+                points[idx] = (cube_len * normal + (2 * row - (cube_len - 1)) * row_axis +
+                               (2 * col - (cube_len - 1)) * col_axis)
+                sticker_normals[idx] = normal
+
+    return points, sticker_normals
+
+
 def compute_rotation_idxs(cube_len: int, moves: List[str]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """ Compute sticker permutations for layer moves from 3-D geometry.
 
@@ -38,19 +58,8 @@ def compute_rotation_idxs(cube_len: int, moves: List[str]) -> Tuple[Dict[str, np
 
     @return: rotate_idxs_new, rotate_idxs_old, used as states_next[:, new] = states[:, old]
     """
-    num_face: int = cube_len ** 2
-
     # sticker index <-> 3-D point
-    points: np.ndarray = np.zeros((6 * num_face, 3), dtype=int)
-    sticker_normals: np.ndarray = np.zeros((6 * num_face, 3), dtype=int)
-    for face_idx, face in enumerate(FACE_ORDER):
-        normal, row_axis, col_axis = (np.array(v) for v in FACE_FRAMES[face])
-        for row in range(cube_len):
-            for col in range(cube_len):
-                idx: int = face_idx * num_face + row * cube_len + col
-                points[idx] = (cube_len * normal + (2 * row - (cube_len - 1)) * row_axis +
-                               (2 * col - (cube_len - 1)) * col_axis)
-                sticker_normals[idx] = normal
+    points, sticker_normals = sticker_coords(cube_len)
     point_to_idx: Dict[Tuple[int, ...], int] = {tuple(p): i for i, p in enumerate(points)}
     cubies: np.ndarray = points - sticker_normals
 

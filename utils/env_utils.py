@@ -11,6 +11,9 @@ def get_environment(env_name: str) -> Environment:
     if env_name == 'cube3':
         from environments.cube3 import Cube3
         env = Cube3()
+    elif env_name == 'cube2':
+        from environments.cube2 import Cube2
+        env = Cube2()
     elif env_name == 'cube4':
         from environments.cube4 import Cube4
         env = Cube4()
