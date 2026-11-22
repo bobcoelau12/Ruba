@@ -1,0 +1,13 @@
+*__pycache__*
+.idea/
+jobs/
+submit.sh
+dummy/
+
+# Large files from DeepCubeA: pretrained weights, datasets, results (get them from the original repo)
+saved_models/
+data/
+results/**/*.pkl
+*.pt
+*.pth
+.pytest_cache/
