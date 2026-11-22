@@ -87,20 +87,27 @@ def compute_rotation_idxs(cube_len: int, moves: List[str]) -> Tuple[Dict[str, np
 
 
 class Cube4State(State):
+    """ colors holds sticker labels (moves act on labels), but hashing and equality use sticker colours
+    (label // 16). On a 4x4x4 the four centre pieces of one colour are physically identical, while corners and wings
+    are fully identified by their colours (checked in tests/test_cube4.py), so colour equality is exactly
+    "looks the same". This makes search treat centre-permuted copies of a state as one state. """
     __slots__ = ['colors', 'hash']
 
     def __init__(self, colors: np.ndarray):
         self.colors: np.ndarray = colors
         self.hash = None
 
+    def face_colors(self) -> np.ndarray:
+        return self.colors // 16
+
     def __hash__(self):
         if self.hash is None:
-            self.hash = hash(self.colors.tobytes())
+            self.hash = hash(self.face_colors().tobytes())
 
         return self.hash
 
     def __eq__(self, other):
-        return np.array_equal(self.colors, other.colors)
+        return np.array_equal(self.face_colors(), other.face_colors())
 
 
 class Cube4(Environment):

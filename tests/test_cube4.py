@@ -3,8 +3,9 @@ import hashlib
 import numpy as np
 import pytest
 
+from environments.cube2 import Cube2State
 from environments.cube3 import Cube3, Cube3State
-from environments.cube4 import Cube4, Cube4State, compute_rotation_idxs
+from environments.cube4 import Cube4, Cube4State, compute_rotation_idxs, sticker_coords
 from utils import env_utils
 
 NUM_MOVES = 24
@@ -265,6 +266,116 @@ def test_is_not_solved_after_one_move(env):
 def test_is_solved_batch(env, scrambled):
     states = env.generate_goal_states(2) + scrambled
     assert env.is_solved(states).tolist() == [True, True] + [False] * len(scrambled)
+
+
+# ---------------------------------------------------------------- colour-based equality and hashing
+
+def piece_stickers():
+    """4x4 sticker indices grouped by cubie: corners (8, 3), wings (24, 2), centres (24,)."""
+    points, normals = sticker_coords(4)
+    cubies = {}
+    for i, c in enumerate(points - normals):
+        cubies.setdefault(tuple(c), []).append(i)
+    corners = np.array([v for v in cubies.values() if len(v) == 3])
+    wings = np.array([v for v in cubies.values() if len(v) == 2])
+    centres = np.array([v[0] for v in cubies.values() if len(v) == 1])
+    assert corners.shape == (8, 3) and wings.shape == (24, 2) and centres.shape == (24,)
+    return corners, wings, centres
+
+
+def shuffle_same_colour_centres(state: np.ndarray, rng) -> np.ndarray:
+    """Permute centre labels among centre positions that currently show the same colour."""
+    _, _, centres = piece_stickers()
+    out = state.copy()
+    for colour in range(6):
+        pos = centres[state[centres] // 16 == colour]
+        out[pos] = state[rng.permutation(pos)]
+    return out
+
+
+def test_colours_identify_corners_and_wings(env):
+    """On reachable states, the colours a corner or wing slot shows determine exactly which labels sit there: every
+    (slot, colours) pair seen maps to one label tuple, and every slot/piece/orientation combination is seen (a wing
+    can sit in a slot in only one orientation, so its mirror twin can never show the same colours there)."""
+    corners, wings, _ = piece_stickers()
+    np.random.seed(1)
+    states = colors(env.generate_states(5000, (20, 60))[0]).astype(np.int64)
+
+    for slots, num_combos in ((corners, 8 * 8 * 3), (wings, 24 * 24)):
+        lab = states[:, slots]  # (B, num_slots, k)
+        col = lab // 16
+        k = slots.shape[1]
+        key = np.arange(len(slots))[None, :] * 6 ** k + (col * 6 ** np.arange(k)[::-1]).sum(axis=2)
+        value = (lab * 96 ** np.arange(k)[::-1]).sum(axis=2)
+        pairs = np.unique(np.stack([key.ravel(), value.ravel()], axis=1), axis=0)
+        keys, counts = np.unique(pairs[:, 0], return_counts=True)
+        assert counts.max() == 1  # colours -> labels is a function
+        assert len(keys) == num_combos  # and every combination occurred
+
+
+def test_colour_equal_only_for_centre_permutations(env):
+    """Pairs from random scrambles: same-colour centre permutations compare equal; any pair whose corners or wings
+    differ (built with real move sequences, commutators A B A' B') compares different."""
+    corners, wings, centres = piece_stickers()
+    rng = np.random.RandomState(2)
+    np.random.seed(2)
+    scrambles = colors(env.generate_states(300, (20, 40))[0])
+    inverse = [env.moves.index(env.moves_rev[a]) for a in range(NUM_MOVES)]
+
+    # centre permutations: equal, same hash
+    for s in scrambles:
+        t = shuffle_same_colour_centres(s, rng)
+        assert Cube4State(s) == Cube4State(t) and hash(Cube4State(s)) == hash(Cube4State(t))
+
+    # move-built pairs
+    seen = {"corner": 0, "wing_only": 0}
+    for i in range(2000):
+        a = list(rng.randint(0, NUM_MOVES, rng.randint(1, 4)))
+        b = list(rng.randint(0, NUM_MOVES, rng.randint(1, 3)))
+        seq = a + b + [inverse[m] for m in a[::-1]] + [inverse[m] for m in b[::-1]]
+        s = scrambles[i % len(scrambles)]
+        t = apply_moves(env, s, seq)
+        corner_changed = not np.array_equal(s[corners], t[corners])
+        wing_changed = not np.array_equal(s[wings], t[wings])
+        only_centres_within_colour = (not corner_changed and not wing_changed and
+                                      np.array_equal(s[centres] // 16, t[centres] // 16))
+        assert (Cube4State(s) == Cube4State(t)) == only_centres_within_colour
+        if corner_changed or wing_changed:
+            assert Cube4State(s) != Cube4State(t)
+        seen["corner"] += corner_changed
+        seen["wing_only"] += wing_changed and not corner_changed
+    assert seen["corner"] > 0 and seen["wing_only"] > 0
+
+
+def test_centre_permutations_collapse_in_sets(env, scrambled):
+    rng = np.random.RandomState(3)
+    for base in [env.goal_colors] + [s.colors for s in scrambled[:5]]:
+        variants = [Cube4State(shuffle_same_colour_centres(base, rng)) for _ in range(50)]
+        assert len({tuple(v.colors) for v in variants}) > 1  # the labels really differ
+        assert len(set(variants)) == 1
+        assert len({hash(v) for v in variants}) == 1
+        closed = {variants[0]: 0.0}  # how A* uses states (closed_dict)
+        assert all(v in closed for v in variants) and Cube4State(base) in closed
+
+
+def test_single_move_from_solved_differs(env):
+    goal = Cube4State(env.goal_colors)
+    children = [env.next_state([goal], a)[0][0] for a in range(NUM_MOVES)]
+    for a, child in enumerate(children):
+        assert child != goal, env.moves[a]
+    assert len(set(children) | {goal}) == NUM_MOVES + 1
+
+
+def test_cube3_and_cube2_states_still_use_labels():
+    # two labels of the same colour swapped: different states on 3x3 and 2x2 (no two pieces look identical there)
+    s3 = np.arange(54, dtype=np.uint8)
+    t3 = s3.copy(); t3[[0, 2]] = t3[[2, 0]]
+    assert Cube3State(s3) != Cube3State(t3)
+    assert hash(Cube3State(s3)) == hash(s3.tobytes()) and hash(Cube3State(t3)) == hash(t3.tobytes())
+    s2 = np.arange(24, dtype=np.uint8)
+    t2 = s2.copy(); t2[[0, 1]] = t2[[1, 0]]
+    assert Cube2State(s2) != Cube2State(t2)
+    assert hash(Cube2State(s2)) == hash(s2.tobytes())
 
 
 # ---------------------------------------------------------------- Cube3 unchanged

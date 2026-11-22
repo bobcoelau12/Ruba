@@ -35,6 +35,11 @@ permutation parity, and centres at home. Without this, e.g. a 4x4 with two whole
 reduced although its 3x3 projection is unsolvable. project_4to* is the inverse of embed and raises ValueError on
 states that are not reduced.
 
+Colour-level check. The four centre pieces of one colour on a 4x4 are physically identical, so a cube reduced by
+hand or by search almost never has them in the label arrangement embed_3to4 writes. is_reduced_3_colour /
+project_4to3_colour keep corners and edges as strict as above but only require each centre block to be a single
+colour. The strict is_reduced_3 / project_4to3 are kept unchanged.
+
 All functions are vectorised over a batch (shape (B, n) or a single state of shape (n,)) using precomputed index
 arrays, like Cube3._move_np.
 """
@@ -292,6 +297,43 @@ def project_4to3(states4: np.ndarray) -> np.ndarray:
 
 def project_4to2(states4: np.ndarray) -> np.ndarray:
     return MAP_2TO4.project(states4)
+
+
+def _canonical_centres_3(states4: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool]:
+    """ Replace each 3x3-centre block that shows a single colour c by the canonical (0 degree) labels of colour c's
+    centre block. Returns the new states, whether every block was single-coloured, and whether input was 1-D. """
+    states_np, single = _as_batch(states4, NUM_BIG)
+    states_np = states_np.copy()
+    block_colours = states_np[:, CENTRE_BLOCKS_3TO4] // 16  # (B, 6, 4)
+    one_colour = np.all(block_colours == block_colours[:, :, :1], axis=(1, 2))
+    # the centre block of 3x3 face c holds the labels CENTRE_BLOCKS_3TO4[c] (centre labels of colour c)
+    states_np[:, CENTRE_BLOCKS_3TO4] = CENTRE_BLOCKS_3TO4[block_colours[:, :, 0]]
+    return states_np, one_colour, single
+
+
+def is_reduced_3_colour(states4: np.ndarray) -> np.ndarray:
+    """ Colour-level reduced check: corners and edge pairs form valid 3x3x3 pieces exactly as in is_reduced_3, and
+    each centre block is a single colour (same-colour 4x4 centre pieces are physically identical, so which of them
+    sits where does not matter). The projected 3x3x3 state must still be valid (reachable), so the centre colours
+    must match the corners and edges. """
+    canonical, one_colour, single = _canonical_centres_3(states4)
+    _, ok, _ = MAP_3TO4.project_and_check(canonical)
+    ok &= one_colour
+    return ok[0] if single else ok
+
+
+def project_4to3_colour(states4: np.ndarray) -> np.ndarray:
+    """ Like project_4to3, but centres are taken from the colour of each centre block. Raises ValueError on states
+    that fail is_reduced_3_colour. Agrees with project_4to3 on states that pass the strict check. """
+    canonical, one_colour, single = _canonical_centres_3(states4)
+    states_small, ok, _ = MAP_3TO4.project_and_check(canonical)
+    ok &= one_colour
+    if not np.all(ok):
+        bad = np.where(~ok)[0]
+        raise ValueError("%i of %i states are not colour-reduced 3x3x3 states (first: index %i)" %
+                         (len(bad), len(ok), bad[0]))
+    states_small = states_small.astype(np.uint8)
+    return states_small[0] if single else states_small
 
 
 def equal_up_to_centre_turns(states_a: np.ndarray, states_b: np.ndarray) -> np.ndarray:

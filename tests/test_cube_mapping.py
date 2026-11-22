@@ -260,6 +260,99 @@ def test_equal_up_to_centre_turns_is_exact_elsewhere():
     assert cm.equal_up_to_centre_turns(s4, s4)
 
 
+# ---------------------------------------------------------------- colour-level reduced check (3->4)
+
+def shuffle_centre_blocks(states4, rng):
+    """Randomly permute the labels inside every 3x3-centre block (same colour, usually not a turn)."""
+    out = states4.copy()
+    for row in out:
+        for block in cm.CENTRE_BLOCKS_3TO4:
+            row[block] = row[rng.permutation(block)]
+    return out
+
+
+def test_colour_check_accepts_shuffled_centres():
+    rng = np.random.RandomState(8)
+    s3 = random_small_states(CASES["3to4"], 300, seed=8)
+    s4 = cm.embed_3to4(s3)
+    shuffled = shuffle_centre_blocks(s4, rng)
+    assert cm.is_reduced_3_colour(shuffled).all()
+    assert np.array_equal(cm.project_4to3_colour(shuffled), s3)
+    # nearly all random shuffles are not turns, and those fail the strict check
+    not_turned = ~cm.equal_up_to_centre_turns(shuffled, s4)
+    assert not_turned.sum() > 250
+    assert not cm.is_reduced_3(shuffled[not_turned]).any()
+    with pytest.raises(ValueError):
+        cm.project_4to3(shuffled[not_turned])
+    # and they look the same as the strict state
+    assert all(Cube4State(a) == Cube4State(b) for a, b in zip(shuffled, s4))
+
+
+def test_projections_agree_on_strict_states(cube4):
+    case = CASES["3to4"]
+    rng = np.random.RandomState(9)
+    s3 = random_small_states(case, 300, seed=9)
+    s4 = cm.embed_3to4(s3)
+    # strict-passing states with random centre turns, and states reached by mapped random walks
+    turned = s4.copy()
+    for row in turned:
+        for block in cm.CENTRE_BLOCKS_3TO4:
+            row[block] = np.roll(row[block], rng.randint(4))
+    walked = s4.copy()
+    for _ in range(30):
+        walked = apply_mapped(cube4, case, walked, rng.randint(12))
+    for states in (s4, turned, walked, GOAL4[None]):
+        assert cm.is_reduced_3(states).all()
+        assert cm.is_reduced_3_colour(states).all()
+        assert np.array_equal(cm.project_4to3_colour(states), cm.project_4to3(states))
+    assert np.array_equal(cm.project_4to3_colour(GOAL4), np.arange(54))
+
+
+def test_colour_check_rejects_unsolvable_and_broken(cube4):
+    rng = np.random.RandomState(10)
+    v3 = cm.MAP_3TO4.valid
+    goal3 = np.arange(54)
+    swapped = goal3.copy(); (a0, a1), (b0, b1) = v3.edges[0], v3.edges[1]
+    swapped[[a0, a1, b0, b1]] = swapped[[b0, b1, a0, a1]]
+    flipped = goal3.copy(); flipped[list(v3.edges[0])] = flipped[list(v3.edges[0][::-1])]
+    twisted = goal3.copy(); twisted[list(v3.corners[0])] = twisted[list(np.roll(v3.corners[0], 1))]
+    for bad3 in (swapped, flipped, twisted):
+        for bad4 in (cm.embed_3to4(bad3), shuffle_centre_blocks(cm.embed_3to4(bad3)[None], rng)[0]):
+            assert not cm.is_reduced_3_colour(bad4)
+            with pytest.raises(ValueError):
+                cm.project_4to3_colour(bad4)
+
+    # one inner move from solved breaks edge pairs (and centres)
+    for a in range(12, 24):
+        s4, _ = cube4._move_np(GOAL4[None], a)
+        assert not cm.is_reduced_3_colour(s4)[0], Cube4.moves[a]
+
+    # a centre block with two colours
+    two = GOAL4.copy()
+    b_u, b_f = cm.CENTRE_BLOCKS_3TO4[0], cm.CENTRE_BLOCKS_3TO4[5]
+    two[[b_u[0], b_f[0]]] = two[[b_f[0], b_u[0]]]
+    assert not cm.is_reduced_3_colour(two)
+    # whole centre blocks of two faces exchanged: single-coloured, but centres do not match corners/edges
+    swapped_c = GOAL4.copy()
+    swapped_c[b_u], swapped_c[b_f] = GOAL4[b_f], GOAL4[b_u]
+    assert not cm.is_reduced_3_colour(swapped_c)
+    with pytest.raises(ValueError):
+        cm.project_4to3_colour(swapped_c)
+
+
+def test_mapped_walks_stay_colour_reduced(cube4):
+    case = CASES["3to4"]
+    rng = np.random.RandomState(11)
+    small = random_small_states(case, 100, seed=11)
+    big = shuffle_centre_blocks(case.embed(small), rng)
+    for _ in range(40):
+        m = rng.randint(12)
+        small, _ = case.env._move_np(small, m)
+        big = apply_mapped(cube4, case, big, m)
+        assert cm.is_reduced_3_colour(big).all()
+        assert np.array_equal(cm.project_4to3_colour(big), small)
+
+
 # ---------------------------------------------------------------- mutation check
 
 @pytest.mark.parametrize("name,kind_size", [("3to4", 2), ("2to4", 4)])
