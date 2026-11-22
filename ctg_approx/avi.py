@@ -33,6 +33,10 @@ def parse_arguments(parser: ArgumentParser) -> Dict[str, Any]:
 
     # Training
     parser.add_argument('--max_itrs', type=int, default=1000000, help="Maxmimum number of iterations")
+    parser.add_argument('--max_time', type=float, default=None, help="Optional wall-clock budget in seconds for this "
+                                                                     "run. Checked before each update; training "
+                                                                     "stops after the update that crosses it. "
+                                                                     "Restarting resumes from the last checkpoint.")
     parser.add_argument('--batch_size', type=int, default=1000, help="Batch size")
     parser.add_argument('--single_gpu_training', action='store_true',
                         default=False, help="If set, train only on one GPU. Update step will still use "
@@ -116,6 +120,19 @@ def parse_arguments(parser: ArgumentParser) -> Dict[str, Any]:
     print("Batch size: %i" % args_dict['batch_size'])
 
     return args_dict
+
+
+def save_atomic(save_fn, obj, file_name: str):
+    """ Write to a temporary file and rename, so an interrupted save (e.g. a Colab disconnect while writing to Google
+    Drive) never leaves a truncated checkpoint behind. """
+    tmp_name: str = "%s.tmp" % file_name
+    with open(tmp_name, "wb") as f:
+        save_fn(obj, f)
+    os.replace(tmp_name, file_name)
+
+
+def save_pickle(obj, f):
+    pickle.dump(obj, f, protocol=-1)
 
 
 def copy_files(src_dir: str, dest_dir: str):
@@ -202,7 +219,12 @@ def main():
         nnet = nn.DataParallel(nnet)
 
     # training
+    run_start_time = time.time()
     while itr < args_dict['max_itrs']:
+        if (args_dict['max_time'] is not None) and (time.time() - run_start_time >= args_dict['max_time']):
+            print("Time budget of %.0f seconds reached at itr %i" % (args_dict['max_time'], itr))
+            break
+
         # update
         targ_file: str = "%s/model_state_dict.pt" % args_dict['targ_dir']
         all_zeros: bool = not os.path.isfile(targ_file)
@@ -231,9 +253,9 @@ def main():
         itr += num_train_itrs
 
         # save nnet
-        torch.save(nnet.state_dict(), "%s/model_state_dict.pt" % args_dict['curr_dir'])
-        pickle.dump(itr, open("%s/train_itr.pkl" % args_dict['curr_dir'], "wb"), protocol=-1)
-        pickle.dump(update_num, open("%s/update_num.pkl" % args_dict['curr_dir'], "wb"), protocol=-1)
+        save_atomic(torch.save, nnet.state_dict(), "%s/model_state_dict.pt" % args_dict['curr_dir'])
+        save_atomic(save_pickle, itr, "%s/train_itr.pkl" % args_dict['curr_dir'])
+        save_atomic(save_pickle, update_num, "%s/update_num.pkl" % args_dict['curr_dir'])
 
         # test
         start_time = time.time()
@@ -252,7 +274,7 @@ def main():
             print("Updating target network")
             copy_files(args_dict['curr_dir'], args_dict['targ_dir'])
             update_num = update_num + 1
-            pickle.dump(update_num, open("%s/update_num.pkl" % args_dict['curr_dir'], "wb"), protocol=-1)
+            save_atomic(save_pickle, update_num, "%s/update_num.pkl" % args_dict['curr_dir'])
 
     print("Done")
 
